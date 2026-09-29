@@ -1,0 +1,30 @@
+# ── Data: never commit. CU-BEMS is ~733 MB; GitHub rejects >100 MB files ──
+data/
+*.csv
+*.parquet
+!data/README.md
+
+# ── Generated outputs ──
+results/
+!results/figures/
+*.pkl
+*.joblib
+
+# ── Python ──
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.ipynb_checkpoints/
+
+# ── OS / editor ──
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ── Secrets ──
+.env
+kaggle.json
