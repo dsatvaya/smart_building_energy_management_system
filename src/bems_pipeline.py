@@ -191,7 +191,8 @@ def evaluate(y_true, y_pred, eps=1e-3):
     mape = float(np.mean(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])) * 100) if mask.any() else np.nan
 
     denom = (np.abs(y_true) + np.abs(y_pred)) / 2
-    smape = float(np.mean(np.abs(y_true - y_pred) / np.where(denom > eps, denom, np.nan)) * 100)
+    ok = denom > eps
+    smape = float(np.mean(np.abs(y_true[ok] - y_pred[ok]) / denom[ok]) * 100) if ok.any() else np.nan
 
     total_true, total_pred = y_true.sum(), y_pred.sum()
     rel_err_total = float(abs(total_pred - total_true) / total_true * 100) if total_true else np.nan
@@ -228,6 +229,12 @@ def build_models(n_train):
     )
 
     return {"Ridge (linear floor)": ridge, "kNN (paper baseline)": knn, "RandomForest": rf}
+
+
+def predict_nonneg(model, X):
+    """Energy consumption cannot be negative. Linear models will predict
+    below zero on low-load hours; clipping is a physical constraint, not a fudge."""
+    return np.clip(model.predict(X), 0.0, None)
 
 
 def temporal_split(X, y, test_frac=0.2):
@@ -325,7 +332,7 @@ def main():
     results, fitted = {}, {}
     for name, model in build_models(len(X_tr)).items():
         model.fit(X_tr, y_tr)
-        results[name] = evaluate(y_te, model.predict(X_te))
+        results[name] = evaluate(y_te, predict_nonneg(model, X_te))
         fitted[name] = model
         if hasattr(model, "best_params_"):
             results[name]["best_params"] = model.best_params_
@@ -365,7 +372,7 @@ def _plot_predictions(X_te, y_te, fitted, args):
     fig, ax = plt.subplots(figsize=(13, 4.5))
     ax.plot(window.index, window.values, label="Actual", lw=1.6, color="black")
     for name, model in fitted.items():
-        pred = model.predict(X_te.iloc[:n])
+        pred = predict_nonneg(model, X_te.iloc[:n])
         ax.plot(window.index, pred, label=name, lw=1.1, alpha=0.85)
 
     ax.set_ylabel("kWh")
