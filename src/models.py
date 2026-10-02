@@ -148,15 +148,19 @@ def compare_models(X_train, y_train, X_test, y_test, cv_splits=3,
 
 def run_experiment(clean_path, target="floor_total", use_lags=True,
                    test_frac=0.2, cv_splits=3, random_state=42, n_jobs=-1,
-                   test_start=None):
+                   test_start=None, test_end=None, sensor_lag=0, keep_index=None):
     """Load a cleaned floor file, create features, split chronologically, compare.
-    test_start (e.g. "2019-11-01") gives a fixed calendar test period; otherwise
+    test_start (e.g. "2019-11-01") [and optional test_end] gives a fixed calendar
+    test period; otherwise
     the last test_frac of rows is used."""
     clean = load_clean(clean_path)
     frame = get_frame(clean, target)
-    X, y = make_features(frame, lags=use_lags)
+    X, y = make_features(frame, lags=use_lags, sensor_lag=sensor_lag)
+    if keep_index is not None:   # Amendment 1: restrict to timestamps shared across runs
+        keep = X.index.isin(keep_index)
+        X, y = X[keep], y[keep]
     if test_start:
-        X_train, X_test, y_train, y_test = date_split(X, y, test_start)
+        X_train, X_test, y_train, y_test = date_split(X, y, test_start, test_end)
     else:
         X_train, X_test, y_train, y_test = temporal_split(X, y, test_frac=test_frac)
     if X_train.empty or X_test.empty:
@@ -168,6 +172,7 @@ def run_experiment(clean_path, target="floor_total", use_lags=True,
     metadata = {
         "target": target,
         "lags": use_lags,
+        "sensor_lag": sensor_lag,
         "n_features": X.shape[1],
         "n_train": len(X_train),
         "n_test": len(X_test),

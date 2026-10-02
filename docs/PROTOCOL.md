@@ -126,6 +126,23 @@ stops without training.
 **Status.** Post hoc — decided after seeing main-run and EDA results. Reported as a
 sensitivity analysis, not a replacement for the main results. No further retuning.
 
+### Amendment 1a — matched baseline for floors with differing rows, 2 Oct 2026
+**Finding.** The pre-training check passed consistency with the frozen run on all floors,
+but on **Floor 5** the sensor-lag-1 features drop **one training hour** present at lag 0
+(previous-hour sensor reading missing); evaluation hours are identical.
+
+**Resolution (applied automatically to any floor where lag-0 and lag-1 rows differ).**
+Both runs for that floor train on the timestamps valid under both settings:
+(1) the sensor-lag-1 run, and (2) a **matched lag-0 baseline** — the frozen configuration
+(same grids, scorer, CV, selection; no retuning) refit on exactly those shared hours.
+Identical training timestamps are asserted before training. The head-to-head comparison
+for such floors uses the matched baseline (`baseline = "matched refit on shared hours"`);
+other floors compare against the frozen main run (`baseline = "frozen main run"`).
+
+**Scope.** The frozen main run remains the reported main result for every floor; the
+matched baseline is used only as the comparison partner in the sensor-timing analysis.
+Outputs: `floor5_{lags,nolags}_baseline_shared.csv`, `total_baseline_shared_sensorlag1.csv`.
+
 ### Note — EDA presentation (reporting only, no effect on models)
 Table 5 reports Pearson r and mutual information (captures non-linear patterns such as
 hour-of-day on/off); AC/lighting/plug energy moved from Table 5 to a composition table,

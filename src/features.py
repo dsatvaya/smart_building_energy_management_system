@@ -42,9 +42,15 @@ def get_frame(clean, target):
     return frame
 
 
-def make_features(frame, lags=True):
-    """Calendar + sensor (+ lag) features. Returns X, y."""
+def make_features(frame, lags=True, sensor_lag=0):
+    """Calendar + sensor (+ lag) features. Returns X, y.
+    sensor_lag=1 (Amendment 1): use sensor readings from the PREVIOUS hour, so no input
+    is measured during the hour being predicted (indoor temp/lux react to AC/lights)."""
+    if sensor_lag not in (0, 1):
+        raise ValueError(f"sensor_lag must be 0 or 1 (negative values would use future readings); got {sensor_lag}")
     f = frame.copy()
+    if sensor_lag:
+        f[list(SENSORS)] = f[list(SENSORS)].shift(sensor_lag)
     f["hour"] = f.index.hour
     f["dow"] = f.index.dayofweek
     f["is_weekend"] = (f["dow"] >= 5).astype(int)

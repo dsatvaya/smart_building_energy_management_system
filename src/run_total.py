@@ -55,15 +55,33 @@ def usable_split(clean_path, test_start, sensor_lag=0):
     return len(X_tr), len(X_te)
 
 
-def save_predictions(path, clean_path, use_lags, fitted, test_start, sensor_lag=0):
+def save_predictions(path, clean_path, use_lags, fitted, test_start, sensor_lag=0, keep_index=None):
     """Hourly actual vs each model's prediction on the shared test period."""
     X, y = make_features(get_frame(load_clean(clean_path), "floor_total"), lags=use_lags,
                          sensor_lag=sensor_lag)
+    if keep_index is not None:
+        keep = X.index.isin(keep_index)
+        X, y = X[keep], y[keep]
     _, X_te, _, y_te = date_split(X, y, test_start)
     out = pd.DataFrame({"actual": y_te})
     for name, search in fitted.items():
         out[name] = np.clip(search.best_estimator_.predict(X_te), 0.0, None)
     out.to_csv(path)
+
+
+def shared_index(clean_path, lags):
+    """Timestamps valid under BOTH sensor_lag=0 and sensor_lag=1 (Amendment 1)."""
+    frame = get_frame(load_clean(clean_path), "floor_total")
+    X0, _ = make_features(frame, lags=lags, sensor_lag=0)
+    X1, _ = make_features(frame, lags=lags, sensor_lag=1)
+    return X0.index.intersection(X1.index)
+
+
+def train_index(clean_path, lags, sensor_lag, test_start, keep_index):
+    X, y = make_features(get_frame(load_clean(clean_path), "floor_total"), lags=lags,
+                         sensor_lag=sensor_lag)
+    X = X[X.index.isin(keep_index)]
+    return X.index[X.index < pd.Timestamp(test_start)]
 
 
 def rows_match_main(clean_path, test_start):
@@ -118,7 +136,7 @@ def matches_frozen_run(clean_path, floor, test_start, tables_dir, preds_dir):
     return problems
 
 
-def compare_on_shared_hours(preds_dir, tables_dir, sfx, allres):
+def compare_on_shared_hours(preds_dir, tables_dir, sfx, allres, baselines=None):
     """Recompute both runs' metrics on the evaluation timestamps present in BOTH runs.
     Also reports each run's own evaluation row count / date range and training rows."""
     main_path = os.path.join(tables_dir, "total_all.csv")
@@ -129,7 +147,8 @@ def compare_on_shared_hours(preds_dir, tables_dir, sfx, allres):
     rows = []
     for (floor, lags), _ in allres.groupby(["floor", "lags"]):
         tag = "lags" if lags else "nolags"
-        p_main = os.path.join(preds_dir, f"floor{floor}_{tag}.csv")
+        base = (baselines or {}).get((floor, lags))
+        p_main = base[0] if base else os.path.join(preds_dir, f"floor{floor}_{tag}.csv")
         p_new = os.path.join(preds_dir, f"floor{floor}_{tag}{sfx}.csv")
         if not (os.path.exists(p_main) and os.path.exists(p_new)):
             print(f"Floor {floor} {tag}: prediction file missing - not compared")
@@ -137,13 +156,15 @@ def compare_on_shared_hours(preds_dir, tables_dir, sfx, allres):
         a = pd.read_csv(p_main, parse_dates=["Date"], index_col="Date")
         b = pd.read_csv(p_new, parse_dates=["Date"], index_col="Date")
         shared = a.index.intersection(b.index)
-        n_tr_main = main_all.query("floor == @floor and lags == @lags")["n_train"].iloc[0]
+        n_tr_main = (base[1] if base else
+                     main_all.query("floor == @floor and lags == @lags")["n_train"].iloc[0])
         n_tr_new = allres.query("floor == @floor and lags == @lags")["n_train"].iloc[0]
         for model in a.columns.drop("actual"):
             sa = regression_metrics(a.loc[shared, "actual"], a.loc[shared, model])
             sb = regression_metrics(b.loc[shared, "actual"], b.loc[shared, model])
             rows.append({
                 "floor": floor, "lags": lags, "model": model,
+                "baseline": "matched refit on shared hours" if base else "frozen main run",
                 "n_eval_main": len(a), "eval_main_start": a.index.min(), "eval_main_end": a.index.max(),
                 "n_eval_sensorlag": len(b), "eval_sensorlag_start": b.index.min(),
                 "eval_sensorlag_end": b.index.max(), "n_shared": len(shared),
@@ -171,25 +192,35 @@ def main():
     os.makedirs(args.tables, exist_ok=True)
     os.makedirs(args.preds, exist_ok=True)
 
-    # Amendment 1: refuse to run unless both runs use identical train/eval timestamps
+    # Amendment 1 checks:
+    #  - lag-0 rows must match the frozen run's artifacts, otherwise stop;
+    #  - if lag-0 and lag-1 rows differ on a floor, that floor is PAIRED: both the sensor-lag
+    #    run and a matched lag-0 baseline (frozen config, no retuning) train on shared hours.
+    paired = set()
     if args.sensor_lag:
         bad = {}
         for floor in args.floors:
             path = os.path.join(args.clean_dir, f"floor{floor}_hourly.csv")
-            if os.path.exists(path):
-                problems = (matches_frozen_run(path, floor, args.test_start, args.tables, args.preds)
-                            + rows_match_main(path, args.test_start))
-                if problems:
-                    bad[floor] = problems
-                else:
-                    print(f"Floor {floor}: lag-0 rows consistent with frozen run "
-                          f"(eval exact; train count+range) and lag-1 rows identical to lag-0 [OK]")
+            if not os.path.exists(path):
+                continue
+            frozen = matches_frozen_run(path, floor, args.test_start, args.tables, args.preds)
+            if frozen:
+                bad[floor] = frozen
+                continue
+            lagdiff = rows_match_main(path, args.test_start)
+            if lagdiff:
+                paired.add(floor)
+                for msg in lagdiff:
+                    print(f"Floor {floor}: lag-0 vs lag-1 rows differ ({msg}) -> PAIRED on shared hours")
+            else:
+                print(f"Floor {floor}: lag-0 rows consistent with frozen run "
+                      f"(eval exact; train count+range) and lag-1 rows identical to lag-0 [OK]")
         if bad:
             for floor, problems in bad.items():
                 for msg in problems:
-                    print(f"Floor {floor}: TIMESTAMP MISMATCH - {msg}")
-            raise SystemExit("Stopped before training: rows differ from the frozen main run or between "
-                             "lag settings, so differences would not be due to sensor timing alone.")
+                    print(f"Floor {floor}: MISMATCH WITH FROZEN RUN - {msg}")
+            raise SystemExit("Stopped before training: regenerated rows differ from the frozen main run.")
+    baselines, base_rows = {}, []
 
     rows, skipped = [], []
     for floor in args.floors:
@@ -210,12 +241,26 @@ def main():
         for use_lags in (True, False):
             tag = "lags" if use_lags else "nolags"
             t = time.time()
+            keep = shared_index(clean_path, use_lags) if floor in paired else None
+            if keep is not None:   # paired floor: identical training timestamps, asserted exactly
+                assert train_index(clean_path, use_lags, 0, args.test_start, keep).equals(
+                    train_index(clean_path, use_lags, 1, args.test_start, keep)), "paired train rows differ"
             res, fitted = run_experiment(clean_path, "floor_total", use_lags,
-                                         test_start=args.test_start, sensor_lag=args.sensor_lag)
+                                         test_start=args.test_start, sensor_lag=args.sensor_lag,
+                                         keep_index=keep)
             res.insert(0, "floor", floor)
             rows.append(res)
             save_predictions(os.path.join(args.preds, f"floor{floor}_{tag}{sfx}.csv"),
-                             clean_path, use_lags, fitted, args.test_start, args.sensor_lag)
+                             clean_path, use_lags, fitted, args.test_start, args.sensor_lag, keep)
+            if keep is not None:   # matched baseline: frozen lag-0 config on the same shared hours
+                b_res, b_fit = run_experiment(clean_path, "floor_total", use_lags,
+                                              test_start=args.test_start, sensor_lag=0, keep_index=keep)
+                b_res.insert(0, "floor", floor)
+                base_rows.append(b_res)
+                b_path = os.path.join(args.preds, f"floor{floor}_{tag}_baseline_shared.csv")
+                save_predictions(b_path, clean_path, use_lags, b_fit, args.test_start, 0, keep)
+                baselines[(floor, use_lags)] = (b_path, int(b_res.n_train.iloc[0]))
+                print(f"  {tag:6s} | matched lag-0 baseline refit on {int(b_res.n_train.iloc[0])} shared train hours")
             best = res.loc[res["cv_rmse_mean"].idxmin()]   # selection: training CV only
             print(f"  {tag:6s} | best by CV RMSE: {best.model} (CV {best.cv_rmse_mean:.2f}) "
                   f"-> test R2 {best.test_r2:.3f} | {time.time() - t:.0f}s")
@@ -254,16 +299,20 @@ def main():
 
     # Amendment 1: head-to-head vs the frozen main run, on timestamps shared by both runs
     if sfx:
-        cmp = compare_on_shared_hours(args.preds, args.tables, sfx, allres)
+        if base_rows:
+            pd.concat(base_rows, ignore_index=True).to_csv(T("total_baseline_shared"), index=False)
+        cmp = compare_on_shared_hours(args.preds, args.tables, sfx, allres, baselines)
         if cmp is not None:
-            cmp.round(4).to_csv(T("total_vs_main"), index=False)
+            num = cmp.select_dtypes("number").columns
+            cmp[num] = cmp[num].round(4)
+            cmp.to_csv(T("total_vs_main"), index=False)
             med = (cmp.groupby(["lags", "model"])[["r2_main_shared", "r2_sensorlag_shared", "r2_change_shared"]]
                    .median().round(3))
             print("\n=== Amendment 1 vs main run: median over floors, on SHARED evaluation hours ===")
             print(med.to_string())
             print("\nEvaluation coverage per floor/version (main vs sensor-lag):")
             print(cmp.drop_duplicates(["floor", "lags"])[
-                ["floor", "lags", "n_eval_main", "n_eval_sensorlag", "n_shared",
+                ["floor", "lags", "baseline", "n_eval_main", "n_eval_sensorlag", "n_shared",
                  "n_train_main", "n_train_sensorlag"]].to_string(index=False))
 
     pd.set_option("display.width", 200)
