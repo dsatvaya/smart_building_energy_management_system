@@ -11,3 +11,4 @@ shap>=0.44
 # notebooks
 jupyter>=1.0
 holidays==0.105
+shap==0.52.0
