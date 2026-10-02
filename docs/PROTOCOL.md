@@ -96,4 +96,37 @@ Run order, each exactly once:
 No retuning after step 2: evaluation results are reported, not acted on.
 
 ## Amendments
-_None yet._
+
+### Amendment 1 — previous-hour sensor readings (post hoc), 2 Oct 2026
+**Reason.** Found during EDA, after the main run. Indoor temperature and lux are measured
+during the hour being predicted and largely react to equipment already running:
+on Floor 7, room temperature falls from 26.1 °C to 20.8 °C within 2 h of the AC switching
+on (366 events); lux is ~0.2 with lights off vs ~30 with lights on (r = 0.94 with lighting
+energy). Same-hour sensors therefore partly reveal the target.
+
+**What changes.** One additional run, `python src/run_total.py --sensor-lag 1`: identical
+to the main run (floors, split, grids, scorer, selection) except temperature, humidity and
+lux are taken from the **previous hour**, so no input is measured during the predicted hour.
+
+**What does not change.** The frozen main run and its outputs are kept and reported as is.
+Amendment outputs carry a `_sensorlag1` suffix. `total_vs_main_sensorlag1.csv` reports,
+per floor × model × feature set, each run's evaluation row count, date range and training
+rows, and computes the head-to-head change **only on evaluation timestamps present in both
+runs** (shifting sensors can move which hours are dropped after sensor gaps).
+`sensor_lag` is restricted to 0 or 1 (a negative shift would use future readings).
+Before any training, for every floor and feature set, the run checks:
+(1) **consistency with the frozen main run** — regenerated sensor-lag-0 evaluation
+timestamps exactly equal the frozen prediction files, and regenerated training rows
+match the frozen run's training row count and first/last timestamp (the frozen run did
+not save its full training index, so exact training-index identity with it cannot be
+verified); and (2) **lag-0 vs lag-1 identity** — under the current code, training and
+evaluation timestamps are identical for sensor-lag 0 and 1. If either check fails, it
+stops without training.
+
+**Status.** Post hoc — decided after seeing main-run and EDA results. Reported as a
+sensitivity analysis, not a replacement for the main results. No further retuning.
+
+### Note — EDA presentation (reporting only, no effect on models)
+Table 5 reports Pearson r and mutual information (captures non-linear patterns such as
+hour-of-day on/off); AC/lighting/plug energy moved from Table 5 to a composition table,
+since they are parts of the target.
