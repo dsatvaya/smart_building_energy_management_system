@@ -12,7 +12,8 @@ predictions; the script stops if it does not.
 Measures
   rf_importance_pct   impurity-based importance (training; biased towards continuous,
                       high-cardinality features - read together with the others)
-  shap_pct            mean |SHAP value| share, evaluation period (fixed-seed sample)
+  shap_pct            mean |SHAP value| share, evaluation period (fixed-seed sample of
+                      200 hours by default; exact TreeSHAP on deep 300-tree forests is slow)
   perm_r2_drop        drop in evaluation R2 when one feature is shuffled (out-of-sample)
   group_perm_r2_drop  drop in evaluation R2 when a GROUP of related features is shuffled
                       together (e.g. hour + hour_sin + hour_cos). Related features carry
@@ -86,7 +87,8 @@ def main():
     ap.add_argument("--floors", nargs="+", type=int, default=FLOORS)
     ap.add_argument("--tables", default="results/tables")
     ap.add_argument("--preds", default="results/predictions")
-    ap.add_argument("--shap-sample", type=int, default=1000)
+    ap.add_argument("--shap-sample", type=int, default=200,
+                    help="evaluation hours used for SHAP (exact TreeSHAP is slow on deep forests)")
     args = ap.parse_args()
 
     allres = pd.read_csv(os.path.join(args.tables, "total_all.csv"))   # frozen main run
@@ -109,6 +111,8 @@ def main():
                 raise SystemExit(f"Floor {floor} {tag}: rebuilt RF does not reproduce the frozen "
                                  f"predictions - stopping.")
 
+            print(f"Floor {floor} {tag:6s}: RF rebuilt and verified; computing SHAP "
+                  f"({min(args.shap_sample, len(X_te))} hours)...", flush=True)
             rf = model.named_steps["model"]
             imp = pd.Series(rf.feature_importances_ * 100, index=X.columns)
 
@@ -116,6 +120,7 @@ def main():
             sv = np.abs(shap.TreeExplainer(rf).shap_values(Xs.to_numpy())).mean(axis=0)
             shap_pct = pd.Series(100 * sv / sv.sum(), index=X.columns)
 
+            print(f"Floor {floor} {tag:6s}: permutation importance...", flush=True)
             perm = permutation_importance(model, X_te, y_te, scoring="r2",
                                           n_repeats=N_REPEATS, random_state=SEED)
             for i, feat in enumerate(X.columns):
